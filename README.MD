@@ -65,7 +65,3 @@ El barco también cuenta con una rotación automática sobre el eje Y. Su escala
 - Compatibilidad con OpenGL 3.3.
 - Bibliotecas GLFW, GLAD, GLM y Assimp.
 - Archivo GLB ubicado en la carpeta `Modelo`.
-
-## 8. Autor
-
-Proyecto académico desarrollado en C++ y OpenGL.
