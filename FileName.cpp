@@ -1,164 +1,495 @@
+
 #include <iostream>
+#include <cmath>
+#include <vector>
+#include <string>
+#include <cstddef>
+#include <algorithm>
+#include <limits>
+
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
+
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 
-// Cargar la cabecera de stb_image
-#define STB_IMAGE_IMPLEMENTATION
-#include <stb_image.h>
+#include <assimp/Importer.hpp>
+#include <assimp/scene.h>
+#include <assimp/postprocess.h>
 
+//=====================================
+// Configuracion
+//=====================================
 
-// Dimensiones de la ventana
-const unsigned int SCR_WIDTH = 800;
-const unsigned int SCR_HEIGHT = 800;
+const unsigned int SCR_WIDTH = 1000;
+const unsigned int SCR_HEIGHT = 900;
 
-// -------------------------------------------------------------
-// SHADERS
-// -------------------------------------------------------------
+glm::vec3 posicionBarco(0.0f);
+float escalaBarco = 1.0f;
+
+//=====================================
+// Entrada del teclado
+//=====================================
+
+void processInput(GLFWwindow* window, float deltaTime)
+{
+    float speed = 1.5f * deltaTime;
+
+    if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
+        glfwSetWindowShouldClose(window, true);
+
+    if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
+        posicionBarco.y += speed;
+
+    if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS)
+        posicionBarco.y -= speed;
+
+    if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS)
+        posicionBarco.x -= speed;
+
+    if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
+        posicionBarco.x += speed;
+
+    // Aumentar el tamaño del barco
+    if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS)
+        escalaBarco += 0.8f * deltaTime;
+
+    // Reducir el tamaño del barco
+    if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS)
+        escalaBarco -= 0.8f * deltaTime;
+
+    // Limitar el tamaño del modelo
+    escalaBarco = glm::clamp(escalaBarco, 0.2f, 5.0f);
+}
+
+//=====================================
+// Vertex Shader
+//=====================================
 
 const char* vertexShaderSource =
 "#version 330 core\n"
 "layout (location = 0) in vec3 aPos;\n"
-"layout (location = 1) in vec4 aColor;\n"
-"layout (location = 2) in vec2 aTexCoord;\n"
+"layout (location = 1) in vec3 aNormal;\n"
+"\n"
+"out vec3 Normal;\n"
+"\n"
+"uniform mat4 model;\n"
+"uniform mat4 view;\n"
+"uniform mat4 projection;\n"
+"\n"
+"void main()\n"
+"{\n"
+"    Normal = mat3(transpose(inverse(model))) * aNormal;\n"
+"    gl_Position = projection * view * model * vec4(aPos, 1.0);\n"
+"}\n";
 
-"out vec4 vColor;\n"
-"out vec2 vTexCoord;\n"
-
-"uniform mat4 uMVP;\n"
-
-"void main() {\n"
-"    gl_Position = uMVP * vec4(aPos, 1.0);\n"
-"    vColor = aColor;\n"
-"    vTexCoord = aTexCoord;\n"
-"}\0";
+//=====================================
+// Fragment Shader
+//=====================================
 
 const char* fragmentShaderSource =
 "#version 330 core\n"
+"\n"
+"in vec3 Normal;\n"
 "out vec4 FragColor;\n"
+"\n"
+"uniform vec4 materialColor;\n"
+"\n"
+"void main()\n"
+"{\n"
+"    // Direccion de la luz principal\n"
+"    vec3 lightDirection = normalize(vec3(-1.5, 2.5, 0.5));\n"
+"\n"
+"    vec3 normal = normalize(Normal);\n"
+"\n"
+"    // Calcular la luz sobre cada superficie\n"
+"    float diffuse = max(dot(normal, lightDirection), 0.0);\n"
+"\n"
+"    // Luz ambiental para generar contraste\n"
+"    float ambient = 0.08;\n"
+"\n"
+"    // Intensidad de la luz directa\n"
+"    float lighting = ambient + diffuse * 2.0;\n"
+"\n"
+"    // Limitar el brillo maximo\n"
+"    lighting = min(lighting, 1.5);\n"
+"\n"
+"    // Aplicar iluminacion al modelo\n"
+"    FragColor = vec4(materialColor.rgb * lighting, materialColor.a);\n"
+"}\n";
 
-"in vec4 vColor;\n"
-"in vec2 vTexCoord;\n"
+//=====================================
+// Estructuras
+//=====================================
 
-"uniform sampler2D uTex;\n"
+struct Vertex
+{
+    glm::vec3 Position;
+    glm::vec3 Normal;
+};
 
-"void main() {\n"
-"    vec4 tex = texture(uTex, vTexCoord);\n"
-"    FragColor = tex * vColor;\n"
-"}\0";
+struct Mesh
+{
+    std::vector<Vertex> vertices;
+    std::vector<unsigned int> indices;
+};
 
-// -------------------------------------------------------------
-// CAMBIO DE TAMAÑO DE VENTANA
-// -------------------------------------------------------------
+struct MeshGPU
+{
+    GLuint VAO = 0;
+    GLuint VBO = 0;
+    GLuint EBO = 0;
 
-void framebuffer_size_callback(GLFWwindow* window, int width, int height) {
-    glViewport(0, 0, width, height);
+    unsigned int indexCount = 0;
+};
+
+//=====================================
+// Convertir matriz Assimp a GLM
+//=====================================
+
+glm::mat4 convertirMatriz(const aiMatrix4x4& m)
+{
+    return glm::mat4(
+        glm::vec4(m.a1, m.b1, m.c1, m.d1),
+        glm::vec4(m.a2, m.b2, m.c2, m.d2),
+        glm::vec4(m.a3, m.b3, m.c3, m.d3),
+        glm::vec4(m.a4, m.b4, m.c4, m.d4)
+    );
 }
 
-// -------------------------------------------------------------
-// CARGAR TEXTURA
-// -------------------------------------------------------------
+//=====================================
+// Procesar malla
+//=====================================
 
-unsigned int loadTexture(const char* filename) {
+Mesh procesarMalla(
+    aiMesh* mesh,
+    const glm::mat4& transform)
+{
+    Mesh nuevaMalla;
 
-    unsigned int textureID;
-    glGenTextures(1, &textureID);
+    glm::mat3 normalMatrix =
+        glm::transpose(glm::inverse(glm::mat3(transform)));
 
-    int width, height, nrChannels;
+    for (unsigned int i = 0; i < mesh->mNumVertices; i++)
+    {
+        Vertex vertex{};
 
-    stbi_set_flip_vertically_on_load(true);
-
-    unsigned char* data =
-        stbi_load(filename, &width, &height, &nrChannels, 0);
-
-    if (data) {
-
-        GLenum format = GL_RGB;
-
-        if (nrChannels == 1)
-            format = GL_RED;
-        else if (nrChannels == 3)
-            format = GL_RGB;
-        else if (nrChannels == 4)
-            format = GL_RGBA;
-
-        glBindTexture(GL_TEXTURE_2D, textureID);
-
-        glTexImage2D(
-            GL_TEXTURE_2D,
-            0,
-            format,
-            width,
-            height,
-            0,
-            format,
-            GL_UNSIGNED_BYTE,
-            data
+        glm::vec3 position(
+            mesh->mVertices[i].x,
+            mesh->mVertices[i].y,
+            mesh->mVertices[i].z
         );
 
-        glGenerateMipmap(GL_TEXTURE_2D);
-
-        glTexParameteri(
-            GL_TEXTURE_2D,
-            GL_TEXTURE_WRAP_S,
-            GL_REPEAT
+        vertex.Position = glm::vec3(
+            transform * glm::vec4(position, 1.0f)
         );
 
-        glTexParameteri(
-            GL_TEXTURE_2D,
-            GL_TEXTURE_WRAP_T,
-            GL_REPEAT
-        );
+        if (mesh->HasNormals())
+        {
+            glm::vec3 normal(
+                mesh->mNormals[i].x,
+                mesh->mNormals[i].y,
+                mesh->mNormals[i].z
+            );
 
-        glTexParameteri(
-            GL_TEXTURE_2D,
-            GL_TEXTURE_MIN_FILTER,
-            GL_LINEAR_MIPMAP_LINEAR
-        );
+            vertex.Normal =
+                glm::normalize(normalMatrix * normal);
+        }
+        else
+        {
+            vertex.Normal = glm::vec3(0.0f, 1.0f, 0.0f);
+        }
 
-        glTexParameteri(
-            GL_TEXTURE_2D,
-            GL_TEXTURE_MAG_FILTER,
-            GL_LINEAR
-        );
-
-        std::cout << "SUCCESS: Textura cargada correctamente ["
-            << filename << "] ("
-            << width << "x"
-            << height << ")"
-            << std::endl;
-    }
-    else {
-
-        std::cerr << "ERROR: No se pudo cargar la textura: "
-            << filename << std::endl;
+        nuevaMalla.vertices.push_back(vertex);
     }
 
-    stbi_image_free(data);
+    for (unsigned int i = 0; i < mesh->mNumFaces; i++)
+    {
+        const aiFace& face = mesh->mFaces[i];
 
-    return textureID;
+        for (unsigned int j = 0; j < face.mNumIndices; j++)
+        {
+            nuevaMalla.indices.push_back(face.mIndices[j]);
+        }
+    }
+
+    return nuevaMalla;
 }
 
-// -------------------------------------------------------------
+//=====================================
+// Procesar nodos
+//=====================================
+
+void procesarNodo(
+    aiNode* node,
+    const aiScene* scene,
+    const glm::mat4& parentTransform,
+    std::vector<Mesh>& meshes)
+{
+    glm::mat4 nodeTransform =
+        parentTransform * convertirMatriz(node->mTransformation);
+
+    for (unsigned int i = 0; i < node->mNumMeshes; i++)
+    {
+        aiMesh* mesh = scene->mMeshes[node->mMeshes[i]];
+
+        meshes.push_back(
+            procesarMalla(mesh, nodeTransform)
+        );
+    }
+
+    for (unsigned int i = 0; i < node->mNumChildren; i++)
+    {
+        procesarNodo(
+            node->mChildren[i],
+            scene,
+            nodeTransform,
+            meshes
+        );
+    }
+}
+
+//=====================================
+// Normalizar modelo
+//=====================================
+
+void normalizarModelo(std::vector<Mesh>& meshes)
+{
+    glm::vec3 minimum(
+        std::numeric_limits<float>::max()
+    );
+
+    glm::vec3 maximum(
+        std::numeric_limits<float>::lowest()
+    );
+
+    for (const Mesh& mesh : meshes)
+    {
+        for (const Vertex& vertex : mesh.vertices)
+        {
+            minimum = glm::min(minimum, vertex.Position);
+            maximum = glm::max(maximum, vertex.Position);
+        }
+    }
+
+    glm::vec3 center = (minimum + maximum) * 0.5f;
+    glm::vec3 dimensions = maximum - minimum;
+
+    float maxDimension = std::max(
+        dimensions.x,
+        std::max(dimensions.y, dimensions.z)
+    );
+
+    if (maxDimension <= 0.00001f)
+        return;
+
+    float scale = 2.0f / maxDimension;
+
+    for (Mesh& mesh : meshes)
+    {
+        for (Vertex& vertex : mesh.vertices)
+        {
+            vertex.Position =
+                (vertex.Position - center) * scale;
+        }
+    }
+}
+
+//=====================================
+// Cargar modelo
+//=====================================
+
+std::vector<Mesh> cargarModelo(const std::string& ruta)
+{
+    Assimp::Importer importer;
+
+    const aiScene* scene = importer.ReadFile(
+        ruta,
+        aiProcess_Triangulate |
+        aiProcess_GenSmoothNormals
+    );
+
+    std::vector<Mesh> meshes;
+
+    if (!scene || !scene->mRootNode)
+    {
+        std::cout << "Error al cargar modelo: "
+            << importer.GetErrorString() << std::endl;
+
+        return meshes;
+    }
+
+    procesarNodo(
+        scene->mRootNode,
+        scene,
+        glm::mat4(1.0f),
+        meshes
+    );
+
+    normalizarModelo(meshes);
+
+    std::cout << "Modelo cargado: "
+        << meshes.size() << " mallas" << std::endl;
+
+    return meshes;
+}
+
+//=====================================
+// Subir malla a GPU
+//=====================================
+
+MeshGPU subirMallaGPU(const Mesh& mesh)
+{
+    MeshGPU gpu;
+
+    glGenVertexArrays(1, &gpu.VAO);
+    glGenBuffers(1, &gpu.VBO);
+    glGenBuffers(1, &gpu.EBO);
+
+    glBindVertexArray(gpu.VAO);
+
+    glBindBuffer(GL_ARRAY_BUFFER, gpu.VBO);
+
+    glBufferData(
+        GL_ARRAY_BUFFER,
+        mesh.vertices.size() * sizeof(Vertex),
+        mesh.vertices.data(),
+        GL_STATIC_DRAW
+    );
+
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, gpu.EBO);
+
+    glBufferData(
+        GL_ELEMENT_ARRAY_BUFFER,
+        mesh.indices.size() * sizeof(unsigned int),
+        mesh.indices.data(),
+        GL_STATIC_DRAW
+    );
+
+    glVertexAttribPointer(
+        0,
+        3,
+        GL_FLOAT,
+        GL_FALSE,
+        sizeof(Vertex),
+        (void*)offsetof(Vertex, Position)
+    );
+
+    glEnableVertexAttribArray(0);
+
+    glVertexAttribPointer(
+        1,
+        3,
+        GL_FLOAT,
+        GL_FALSE,
+        sizeof(Vertex),
+        (void*)offsetof(Vertex, Normal)
+    );
+
+    glEnableVertexAttribArray(1);
+
+    glBindVertexArray(0);
+
+    gpu.indexCount =
+        static_cast<unsigned int>(mesh.indices.size());
+
+    return gpu;
+}
+
+//=====================================
+// Dibujar modelo
+//=====================================
+
+void dibujarModelo(
+    const std::vector<MeshGPU>& modeloGPU,
+    const glm::mat4& model,
+    GLuint modelLoc,
+    GLuint materialColorLoc)
+{
+    glUniformMatrix4fv(
+        modelLoc,
+        1,
+        GL_FALSE,
+        glm::value_ptr(model)
+    );
+
+    // Color morado del modelo
+
+    glm::vec4 colorMorado(
+        0.7f, 0.2f, 1.0f, 1.0f
+    );
+
+    glUniform4fv(
+        materialColorLoc,
+        1,
+        glm::value_ptr(colorMorado)
+    );
+
+    for (const MeshGPU& mesh : modeloGPU)
+    {
+        glBindVertexArray(mesh.VAO);
+
+        glDrawElements(
+            GL_TRIANGLES,
+            mesh.indexCount,
+            GL_UNSIGNED_INT,
+            0
+        );
+    }
+
+    glBindVertexArray(0);
+}
+
+//=====================================
+// Compilar shader
+//=====================================
+
+GLuint compilarShader(GLenum tipo, const char* codigo)
+{
+    GLuint shader = glCreateShader(tipo);
+
+    glShaderSource(shader, 1, &codigo, NULL);
+    glCompileShader(shader);
+
+    GLint success = 0;
+
+    glGetShaderiv(
+        shader,
+        GL_COMPILE_STATUS,
+        &success
+    );
+
+    if (!success)
+    {
+        char infoLog[512];
+
+        glGetShaderInfoLog(
+            shader,
+            512,
+            NULL,
+            infoLog
+        );
+
+        std::cout << "Error al compilar shader:\n"
+            << infoLog << std::endl;
+
+        glDeleteShader(shader);
+        return 0;
+    }
+
+    return shader;
+}
+
+//=====================================
 // MAIN
-// -------------------------------------------------------------
+//=====================================
 
-int main() {
-
-    std::cout << "Proyecto: Piramide 3D con Textura - Lorena Obando 6001000"
-        << std::endl;
-
-    // ---------------------------------------------------------
-    // INICIALIZAR GLFW
-    // ---------------------------------------------------------
-
-    if (!glfwInit()) {
-
-        std::cerr << "Error al inicializar GLFW"
-            << std::endl;
-
+int main()
+{
+    if (!glfwInit())
+    {
+        std::cout << "Error al iniciar GLFW" << std::endl;
         return -1;
     }
 
@@ -170,340 +501,185 @@ int main() {
         GLFW_OPENGL_CORE_PROFILE
     );
 
-    glfwWindowHint(GLFW_DEPTH_BITS, 24);
-
-    // Crear ventana
     GLFWwindow* window = glfwCreateWindow(
         SCR_WIDTH,
         SCR_HEIGHT,
-        "Piramide 3D con Textura",
-        nullptr,
-        nullptr
+        "Going Merry - OpenGL",
+        NULL,
+        NULL
     );
 
-    if (window == nullptr) {
-
-        std::cerr << "Error al crear la ventana GLFW"
-            << std::endl;
-
+    if (window == NULL)
+    {
+        std::cout << "Error al crear ventana" << std::endl;
         glfwTerminate();
-
         return -1;
     }
 
     glfwMakeContextCurrent(window);
 
-    glfwSetFramebufferSizeCallback(
-        window,
-        framebuffer_size_callback
+    if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress))
+    {
+        std::cout << "Error al cargar GLAD" << std::endl;
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        return -1;
+    }
+
+    glViewport(0, 0, SCR_WIDTH, SCR_HEIGHT);
+    glEnable(GL_DEPTH_TEST);
+
+    //=====================================
+    // Cargar modelo
+    //=====================================
+
+    std::vector<Mesh> modelo = cargarModelo(
+        R"(C:\Users\oband\Downloads\UMNG\Computación gráfica\Project1\Modelo\one_piece_-going_merry.glb)"
     );
 
-    // ---------------------------------------------------------
-    // INICIALIZAR GLAD
-    // ---------------------------------------------------------
+    if (modelo.empty())
+    {
+        std::cout << "No se pudo cargar el modelo." << std::endl;
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        return -1;
+    }
 
-    if (!gladLoadGLLoader(
-        (GLADloadproc)glfwGetProcAddress)) {
+    //=====================================
+    // Subir modelo a GPU
+    //=====================================
 
-        std::cerr << "Error al inicializar GLAD"
-            << std::endl;
+    std::vector<MeshGPU> modeloGPU;
+
+    for (const Mesh& mesh : modelo)
+    {
+        modeloGPU.push_back(subirMallaGPU(mesh));
+    }
+
+    //=====================================
+    // Crear shaders
+    //=====================================
+
+    GLuint vertexShader = compilarShader(
+        GL_VERTEX_SHADER,
+        vertexShaderSource
+    );
+
+    GLuint fragmentShader = compilarShader(
+        GL_FRAGMENT_SHADER,
+        fragmentShaderSource
+    );
+
+    if (vertexShader == 0 || fragmentShader == 0)
+    {
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        return -1;
+    }
+
+    GLuint shaderProgram = glCreateProgram();
+
+    glAttachShader(shaderProgram, vertexShader);
+    glAttachShader(shaderProgram, fragmentShader);
+
+    glLinkProgram(shaderProgram);
+
+    GLint linkSuccess = 0;
+
+    glGetProgramiv(
+        shaderProgram,
+        GL_LINK_STATUS,
+        &linkSuccess
+    );
+
+    if (!linkSuccess)
+    {
+        char infoLog[512];
+
+        glGetProgramInfoLog(
+            shaderProgram,
+            512,
+            NULL,
+            infoLog
+        );
+
+        std::cout << "Error al enlazar shaders:\n"
+            << infoLog << std::endl;
+
+        glDeleteShader(vertexShader);
+        glDeleteShader(fragmentShader);
+        glDeleteProgram(shaderProgram);
+
+        glfwDestroyWindow(window);
+        glfwTerminate();
 
         return -1;
     }
 
-    // Activar profundidad
-    glEnable(GL_DEPTH_TEST);
-
-    // ---------------------------------------------------------
-    // COMPILAR SHADER DE VÉRTICES
-    // ---------------------------------------------------------
-
-    unsigned int vertexShader =
-        glCreateShader(GL_VERTEX_SHADER);
-
-    glShaderSource(
-        vertexShader,
-        1,
-        &vertexShaderSource,
-        NULL
-    );
-
-    glCompileShader(vertexShader);
-
-    // ---------------------------------------------------------
-    // COMPILAR SHADER DE FRAGMENTOS
-    // ---------------------------------------------------------
-
-    unsigned int fragmentShader =
-        glCreateShader(GL_FRAGMENT_SHADER);
-
-    glShaderSource(
-        fragmentShader,
-        1,
-        &fragmentShaderSource,
-        NULL
-    );
-
-    glCompileShader(fragmentShader);
-
-    // ---------------------------------------------------------
-    // CREAR PROGRAMA DE SHADERS
-    // ---------------------------------------------------------
-
-    unsigned int shaderProgram =
-        glCreateProgram();
-
-    glAttachShader(
-        shaderProgram,
-        vertexShader
-    );
-
-    glAttachShader(
-        shaderProgram,
-        fragmentShader
-    );
-
-    glLinkProgram(shaderProgram);
-
     glDeleteShader(vertexShader);
     glDeleteShader(fragmentShader);
 
-    // ---------------------------------------------------------
-    // CARGAR TEXTURA
-    // ---------------------------------------------------------
+    //=====================================
+    // Uniforms
+    //=====================================
 
-    unsigned int texture1 =
-        loadTexture("texturaescamas.jpg");
+    GLuint modelLoc =
+        glGetUniformLocation(shaderProgram, "model");
 
-    // ---------------------------------------------------------
-    // VÉRTICES DE LA PIRÁMIDE
-    // ---------------------------------------------------------
-    //
-    //              4
-    //             /|\
-    //            / | \
-    //           /  |  \
-    //          0---|---1
-    //           \  |  /
-    //            \ | /
-    //             \|/
-    //              2
-    //
-    // Base cuadrada:
-    // 0, 1, 2, 3
-    //
-    // Punta:
-    // 4
-    //
-    // Cada vértice contiene:
-    // posición = 3 floats
-    // color    = 4 floats
-    // textura  = 2 floats
-    //
-    // Total = 9 floats por vértice
+    GLuint viewLoc =
+        glGetUniformLocation(shaderProgram, "view");
 
-    float verticesPiramide[] = {
+    GLuint projectionLoc =
+        glGetUniformLocation(shaderProgram, "projection");
 
-        // -----------------------------------------------------
-        // CARA FRONTAL
-        // -----------------------------------------------------
+    GLuint materialColorLoc =
+        glGetUniformLocation(shaderProgram, "materialColor");
 
-        // posición             color                     UV
+    //=====================================
+    // Camara
+    //=====================================
 
-        -0.6f, -0.6f,  0.6f,
-        0.10f, 0.95f, 0.85f, 1.0f,
-        0.0f, 0.0f,
+    glm::vec3 cameraPos(0.0f, 0.0f, 4.0f);
+    glm::vec3 cameraTarget(0.0f, 0.0f, 0.0f);
+    glm::vec3 cameraUp(0.0f, 1.0f, 0.0f);
 
-         0.6f, -0.6f,  0.6f,
-        1.00f, 0.35f, 0.30f, 1.0f,
-        1.0f, 0.0f,
-
-         0.0f,  0.7f,  0.0f,
-        0.55f, 0.20f, 1.00f, 1.0f,
-        0.5f, 1.0f,
-
-
-        // -----------------------------------------------------
-        // CARA DERECHA
-        // -----------------------------------------------------
-
-         0.6f, -0.6f,  0.6f,
-        1.00f, 0.35f, 0.30f, 1.0f,
-        0.0f, 0.0f,
-
-         0.6f, -0.6f, -0.6f,
-        0.10f, 0.95f, 0.85f, 1.0f,
-        1.0f, 0.0f,
-
-         0.0f,  0.7f,  0.0f,
-        0.55f, 0.20f, 1.00f, 1.0f,
-        0.5f, 1.0f,
-
-
-        // -----------------------------------------------------
-        // CARA TRASERA
-        // -----------------------------------------------------
-
-         0.6f, -0.6f, -0.6f,
-        0.10f, 0.95f, 0.85f, 1.0f,
-        0.0f, 0.0f,
-
-        -0.6f, -0.6f, -0.6f,
-        1.00f, 0.35f, 0.30f, 1.0f,
-        1.0f, 0.0f,
-
-         0.0f,  0.7f,  0.0f,
-        0.55f, 0.20f, 1.00f, 1.0f,
-        0.5f, 1.0f,
-
-
-        // -----------------------------------------------------
-        // CARA IZQUIERDA
-        // -----------------------------------------------------
-
-        -0.6f, -0.6f, -0.6f,
-        1.00f, 0.35f, 0.30f, 1.0f,
-        0.0f, 0.0f,
-
-        -0.6f, -0.6f,  0.6f,
-        0.10f, 0.95f, 0.85f, 1.0f,
-        1.0f, 0.0f,
-
-         0.0f,  0.7f,  0.0f,
-        0.55f, 0.20f, 1.00f, 1.0f,
-        0.5f, 1.0f,
-
-
-        // -----------------------------------------------------
-        // BASE
-        // -----------------------------------------------------
-
-        -0.6f, -0.6f,  0.6f,
-        0.10f, 0.95f, 0.85f, 1.0f,
-        0.0f, 0.0f,
-
-         0.6f, -0.6f,  0.6f,
-        1.00f, 0.35f, 0.30f, 1.0f,
-        1.0f, 0.0f,
-
-         0.6f, -0.6f, -0.6f,
-        0.55f, 0.20f, 1.00f, 1.0f,
-        1.0f, 1.0f,
-
-
-        -0.6f, -0.6f,  0.6f,
-        0.10f, 0.95f, 0.85f, 1.0f,
-        0.0f, 0.0f,
-
-         0.6f, -0.6f, -0.6f,
-        0.55f, 0.20f, 1.00f, 1.0f,
-        1.0f, 1.0f,
-
-        -0.6f, -0.6f, -0.6f,
-        1.00f, 0.35f, 0.30f, 1.0f,
-        0.0f, 1.0f
-    };
-
-    // ---------------------------------------------------------
-    // VAO Y VBO
-    // ---------------------------------------------------------
-
-    unsigned int VAO, VBO;
-
-    glGenVertexArrays(1, &VAO);
-    glGenBuffers(1, &VBO);
-
-    glBindVertexArray(VAO);
-
-    glBindBuffer(
-        GL_ARRAY_BUFFER,
-        VBO
+    glm::mat4 view = glm::lookAt(
+        cameraPos,
+        cameraTarget,
+        cameraUp
     );
 
-    glBufferData(
-        GL_ARRAY_BUFFER,
-        sizeof(verticesPiramide),
-        verticesPiramide,
-        GL_STATIC_DRAW
+    //=====================================
+    // Proyeccion
+    //=====================================
+
+    glm::mat4 projection = glm::perspective(
+        glm::radians(45.0f),
+        (float)SCR_WIDTH / (float)SCR_HEIGHT,
+        0.1f,
+        100.0f
     );
 
-    // ---------------------------------------------------------
-    // ATRIBUTO 0: POSICIÓN
-    // ---------------------------------------------------------
+    // Tiempo y rotacion
 
-    glVertexAttribPointer(
-        0,
-        3,
-        GL_FLOAT,
-        GL_FALSE,
-        9 * sizeof(float),
-        (void*)0
-    );
+    float deltaTime = 0.0f;
+    float lastFrame = 0.0f;
 
-    glEnableVertexAttribArray(0);
+    float rotationSpeed = glm::radians(30.0f);
 
-    // ---------------------------------------------------------
-    // ATRIBUTO 1: COLOR
-    // ---------------------------------------------------------
+    // Loop principal
 
-    glVertexAttribPointer(
-        1,
-        4,
-        GL_FLOAT,
-        GL_FALSE,
-        9 * sizeof(float),
-        (void*)(3 * sizeof(float))
-    );
+    while (!glfwWindowShouldClose(window))
+    {
+        float currentFrame = glfwGetTime();
 
-    glEnableVertexAttribArray(1);
+        deltaTime = currentFrame - lastFrame;
+        lastFrame = currentFrame;
 
-    // ---------------------------------------------------------
-    // ATRIBUTO 2: TEXTURA
-    // ---------------------------------------------------------
+        processInput(window, deltaTime);
 
-    glVertexAttribPointer(
-        2,
-        2,
-        GL_FLOAT,
-        GL_FALSE,
-        9 * sizeof(float),
-        (void*)(7 * sizeof(float))
-    );
-
-    glEnableVertexAttribArray(2);
-
-    // ---------------------------------------------------------
-    // CONFIGURAR TEXTURA
-    // ---------------------------------------------------------
-
-    glUseProgram(shaderProgram);
-
-    glUniform1i(
-        glGetUniformLocation(
-            shaderProgram,
-            "uTex"
-        ),
-        0
-    );
-
-    int mvpLoc =
-        glGetUniformLocation(
-            shaderProgram,
-            "uMVP"
-        );
-
-    // ---------------------------------------------------------
-    // BUCLE PRINCIPAL
-    // ---------------------------------------------------------
-
-    while (!glfwWindowShouldClose(window)) {
-
-        // Color del fondo
         glClearColor(
-            0.10f,
-            0.35f,
-            0.38f,
-            1.0f
+            0.05f, 0.05f, 0.15f, 1.0f
         );
 
         glClear(
@@ -513,112 +689,66 @@ int main() {
 
         glUseProgram(shaderProgram);
 
-        // -----------------------------------------------------
-        // ACTIVAR TEXTURA
-        // -----------------------------------------------------
+        float timeValue = glfwGetTime();
 
-        glActiveTexture(GL_TEXTURE0);
+        glm::mat4 model = glm::mat4(1.0f);
 
-        glBindTexture(
-            GL_TEXTURE_2D,
-            texture1
+        model = glm::translate(
+            model,
+            posicionBarco
         );
 
-        // -----------------------------------------------------
-        // PROYECCIÓN
-        // -----------------------------------------------------
-
-        int width = 0;
-        int height = 0;
-
-        glfwGetFramebufferSize(
-            window,
-            &width,
-            &height
+        model = glm::rotate(
+            model,
+            timeValue * rotationSpeed,
+            glm::vec3(0.0f, 1.0f, 0.0f)
         );
 
-        float aspect =
-            width > 0
-            ? (float)width / (float)height
-            : 1.0f;
-
-        glm::mat4 projection =
-            glm::perspective(
-                glm::radians(45.0f),
-                aspect,
-                0.1f,
-                100.0f
-            );
-
-        // -----------------------------------------------------
-        // CÁMARA
-        // -----------------------------------------------------
-
-        glm::mat4 view =
-            glm::lookAt(
-                glm::vec3(0.0f, 0.2f, 3.0f),
-                glm::vec3(0.0f, 0.0f, 0.0f),
-                glm::vec3(0.0f, 1.0f, 0.0f)
-            );
-
-        // -----------------------------------------------------
-        // ROTACIÓN SOBRE EL EJE Y
-        // -----------------------------------------------------
-
-        float t =
-            (float)glfwGetTime();
-
-        glm::mat4 model =
-            glm::mat4(1.0f);
-
-        model =
-            glm::rotate(
-                model,
-                t * 0.8f,
-                glm::vec3(0.0f, 1.0f, 0.0f)
-            );
-
-        // -----------------------------------------------------
-        // MVP
-        // -----------------------------------------------------
-
-        glm::mat4 mvp =
-            projection *
-            view *
-            model;
+        // Aplicar escala al barco
+        model = glm::scale(
+            model,
+            glm::vec3(escalaBarco)
+        );
 
         glUniformMatrix4fv(
-            mvpLoc,
+            viewLoc,
             1,
             GL_FALSE,
-            glm::value_ptr(mvp)
+            glm::value_ptr(view)
         );
 
-        // -----------------------------------------------------
-        // DIBUJAR PIRÁMIDE
-        // -----------------------------------------------------
+        glUniformMatrix4fv(
+            projectionLoc,
+            1,
+            GL_FALSE,
+            glm::value_ptr(projection)
+        );
 
-        glBindVertexArray(VAO);
-
-        glDrawArrays(
-            GL_TRIANGLES,
-            0,
-            18
+        dibujarModelo(
+            modeloGPU,
+            model,
+            modelLoc,
+            materialColorLoc
         );
 
         glfwSwapBuffers(window);
-
         glfwPollEvents();
     }
 
-    // ---------------------------------------------------------
-    // LIBERAR RECURSOS
-    // ---------------------------------------------------------
+    //=====================================
+    // Liberar memoria
+    //=====================================
 
-    glDeleteVertexArrays(1, &VAO);
-    glDeleteBuffers(1, &VBO);
+    for (const MeshGPU& mesh : modeloGPU)
+    {
+        glDeleteVertexArrays(1, &mesh.VAO);
+        glDeleteBuffers(1, &mesh.VBO);
+        glDeleteBuffers(1, &mesh.EBO);
+    }
+
     glDeleteProgram(shaderProgram);
 
+    glfwDestroyWindow(window);
     glfwTerminate();
 
     return 0;
